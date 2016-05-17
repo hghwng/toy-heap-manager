@@ -1,3 +1,6 @@
 *.swp
 src/.gdb_history
 src/bin/*
+report/*
+!report/doc.tex
+!report/src/
