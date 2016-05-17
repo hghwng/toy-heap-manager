@@ -29,7 +29,7 @@ struct bucket_header {
 } __attribute__((aligned (8)));
 
 struct bucket_record {
-  uint8_t bytes_in_use;
+  uint16_t bytes_in_use;
 };
 
 /*

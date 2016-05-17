@@ -7,6 +7,7 @@
 #include "list.h"
 #include "heap.h"
 #define dprint(...) fprintf(stderr, __VA_ARGS__)
+#define iprint(...) fprintf(stderr, __VA_ARGS__)
 
 static struct list_head g_free[BUCKET_TYPE_NUM];
 static struct list_head g_full[BUCKET_TYPE_NUM];
@@ -23,7 +24,7 @@ static void *virtual_alloc(size_t pages) {
 
 static void virtual_free(void *ptr, size_t pages) {
   int ret = munmap(ptr, pages);
-  if (ret < 0) dprint("ERROR: virtual_free(%p, %zu)\n", ptr, pages);
+  if (ret < 0) fprintf(stderr, "ERROR: virtual_free(%p, %zu)\n", ptr, pages);
 }
 
 /******************************************
@@ -31,7 +32,7 @@ static void virtual_free(void *ptr, size_t pages) {
  ******************************************/
 
 static void *blob_alloc(size_t size) {
-  size_t pages = size / PAGE_SIZE;
+  size_t pages = (size + sizeof(struct bucket_header)) / PAGE_SIZE + 1;
   void *ptr = virtual_alloc(pages);
   if (!ptr) return NULL;
 
@@ -40,7 +41,7 @@ static void *blob_alloc(size_t size) {
   header->blob.bytes_in_use = size;
   header->blob.pages_allocated = pages;
 
-  return ptr;
+  return (char *)ptr + sizeof(struct bucket_header);
 }
 
 static void blob_free(struct bucket_header *header) {
@@ -103,8 +104,12 @@ static void bucket_free(struct bucket_header *bucket) {
  * Allocate a record of given size from available buckets.
  */
 static void *record_alloc(size_t size) {
-  size_t type = 8 * sizeof(unsigned int) - __builtin_clz((unsigned int)size);
-  if (type < BUCKET_TYPE_MIN) type = BUCKET_TYPE_MIN;
+  size_t type;
+  if (size < bucket_get_size(BUCKET_TYPE_MIN)) {
+    type = BUCKET_TYPE_MIN;
+  } else {
+    type = 8 * sizeof(unsigned int) - __builtin_clz((unsigned int)(size - 1));
+  }
 
   // Create new bucket if needed
   struct list_head *head = g_free + type;
@@ -115,8 +120,10 @@ static void *record_alloc(size_t size) {
   size_t record_num = bucket_max_record(type);
   struct bucket_header *header = list_first(g_free[type], struct bucket_header, bucket.list);
   struct bucket_record *record = bucket_get_records(header);
-  char *data = (char *)(record + record_num * sizeof(struct bucket_record));
-  while (record->bytes_in_use) ++record, data += record_size;
+  char *data = (char *)(record + record_num);
+  size_t i = 0;
+  while (record->bytes_in_use) ++record, data += record_size, ++i;
+  iprint("INFO: record_alloc, header=%p i=%zu data=%p size=%zu\n", header, i, data, size);
 
   // Write metadata back
   record->bytes_in_use = size;
@@ -137,7 +144,7 @@ static void record_free(struct bucket_header *header, size_t index) {
   record[index].bytes_in_use = 0;
 
   if (header->bucket.records_in_use == record_num - 1) {
-    list_move(g_full + header->type, &header->bucket.list);
+    list_move(g_free + header->type, &header->bucket.list);
   } else if (header->bucket.records_in_use == 0) {
     bucket_free(header);
   }
@@ -149,34 +156,40 @@ static void record_free(struct bucket_header *header, size_t index) {
 
 void *malloc(size_t size) {
   void *ptr = NULL;
-  if (size != 0 && size <= bucket_get_size(BUCKET_TYPE_MAX)) {
-    ptr = record_alloc(size);
-  } else {
-    ptr = blob_alloc(size);
+  if (size != 0) {
+    if (size <= bucket_get_size(BUCKET_TYPE_MAX) && size > 512) {
+      ptr = record_alloc(size);
+    } else {
+      ptr = blob_alloc(size);
+    }
   }
   dprint("malloc(%zu) = %p\n", size, ptr);
   return ptr;
 }
 
 void free(void *ptr) {
-  dprint("free(%p)\n", ptr);
+  dprint("DEBUG: free(%p)\n", ptr);
 
   if (!ptr) return;
   struct bucket_header *header = (struct bucket_header *)((size_t)ptr & PAGE_BEGIN_MASK);
   if (header->type == BUCKET_TYPE_BLOB) {
     blob_free(header);
   } else {
-    record_free(header, ((size_t)ptr - (size_t)header) / bucket_get_size(header->type));
+    size_t offset = (size_t)ptr - (size_t)(
+        bucket_get_records(header) + bucket_max_record(header->type));
+    size_t idx = offset / bucket_get_size(header->type);
+    iprint("INFO: record_free, header = %p, i = %zu, data = %p\n", header, idx, ptr);
+    record_free(header, idx);
   }
 }
 
 void *calloc(size_t nmemb, size_t size) {
-  dprint("calloc(%zu, %zu)\n", nmemb, size);
+  dprint("DEBUG: calloc(%zu, %zu)\n", nmemb, size);
   return malloc(nmemb * size);
 }
 
 void *realloc(void *ptr, size_t size) {
-  dprint("realloc(%p, %zu)\n", ptr, size);
+  dprint("DEBUG: realloc(%p, %zu)\n", ptr, size);
   void *new_address = malloc(size);
   if (ptr) memcpy(new_address, ptr, size);
   free(ptr);
@@ -187,7 +200,7 @@ void *realloc(void *ptr, size_t size) {
  * Initialize free and full buckets and /dev/zero.
  */
 __attribute__((constructor)) static void init() {
-  dprint("init\n");
+  dprint("DEBUG: init\n");
   g_fd = open("/dev/zero", O_RDWR);
   if (g_fd < 0) raise(SIGABRT);
   for (int i = 0; i < BUCKET_TYPE_NUM; ++i) {
