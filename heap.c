@@ -19,6 +19,26 @@ static struct list_head g_free[BUCKET_TYPE_NUM];
 static struct list_head g_full[BUCKET_TYPE_NUM];
 static int g_fd;
 
+/*
+ * Pad size such that (size % align == 0).
+ */
+static inline size_t util_align(size_t size, size_t align) {
+  return size + (align - size % align) % align;
+}
+
+/*
+ * Initialize free and full buckets and /dev/zero.
+ */
+__attribute__((constructor)) static void init() {
+  dprint("DEBUG: init\n");
+  g_fd = open("/dev/zero", O_RDWR);
+  if (g_fd < 0) raise(SIGABRT);
+  for (int i = 0; i < BUCKET_TYPE_NUM; ++i) {
+    list_init(g_free + i);
+    list_init(g_full + i);
+  }
+}
+
 /***************************
  *  Raw memory allocation  *
  ***************************/
@@ -38,7 +58,7 @@ static void virtual_free(void *ptr, size_t pages) {
  ******************************************/
 
 static void *blob_alloc(size_t size) {
-  size_t pages = (size + sizeof(struct bucket_header)) / PAGE_SIZE + 1;
+  size_t pages = (size + sizeof(struct bucket_header) + ALIGN_SIZE - 1) / PAGE_SIZE + 1;
   void *ptr = virtual_alloc(pages);
   if (!ptr) return NULL;
 
@@ -47,7 +67,7 @@ static void *blob_alloc(size_t size) {
   header->blob.bytes_used = size;
   header->blob.pages_allocated = pages;
 
-  return header->bytes_used;
+  return (void *)util_align((size_t)&header->bytes_used, ALIGN_SIZE);
 }
 
 static void blob_free(struct bucket_header *header) {
@@ -67,10 +87,8 @@ static inline size_t bucket_get_record_size(size_t type) {
 }
 
 static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_records) {
-  size_t data = (size_t)(hdr->bytes_used + num_records);
-  // padding to multiple of word size (sizeof(size_t)).
-  data += (sizeof(size_t) - data % sizeof(size_t)) % sizeof(size_t);
-  return (char *)data;
+  void *data = hdr->bytes_used + num_records;
+  return (char *)util_align((size_t)data, ALIGN_SIZE);
 }
 
 /*
@@ -211,15 +229,3 @@ void *realloc(void *ptr, size_t size) {
   return new_address;
 }
 
-/*
- * Initialize free and full buckets and /dev/zero.
- */
-__attribute__((constructor)) static void init() {
-  dprint("DEBUG: init\n");
-  g_fd = open("/dev/zero", O_RDWR);
-  if (g_fd < 0) raise(SIGABRT);
-  for (int i = 0; i < BUCKET_TYPE_NUM; ++i) {
-    list_init(g_free + i);
-    list_init(g_full + i);
-  }
-}

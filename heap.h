@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "list.h"
 
+#define ALIGN_SIZE        sizeof(size_t)
 #define PAGE_SIZE         4096ul
 #define PAGE_BEGIN_MASK   (~(PAGE_SIZE - 1ul))
 
