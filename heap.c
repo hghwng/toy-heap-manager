@@ -23,7 +23,17 @@ static int g_fd;
  * Pad size such that (size % align == 0).
  */
 static inline size_t util_align(size_t size, size_t align) {
+  // size % align: remaining bytes
+  // align - size % align: bytes to pad
+  // (align - size % align) % align: handle cases where (size % align == 0) already
   return size + (align - size % align) % align;
+}
+
+/*
+ * Get the bucket header associated with the pointer to user data.
+ */
+static inline struct bucket_header *util_ptr_to_header(void *ptr) {
+  return (struct bucket_header *)((size_t)ptr & PAGE_BEGIN_MASK);
 }
 
 /*
@@ -74,6 +84,11 @@ static void blob_free(struct bucket_header *header) {
   virtual_free(header, header->blob.pages_allocated);
 }
 
+static bool blob_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
+  size_t end = (size_t)header + header->blob.pages_allocated * PAGE_SIZE;
+  size_t avail = end - util_align((size_t)header->bytes_used, ALIGN_SIZE);
+  return new_size <= avail;
+}
 /******************************************
  *  Managed allocation for small objects  *
  ******************************************/
@@ -99,6 +114,15 @@ static inline size_t bucket_get_max_records(size_t type) {
   body_size -= sizeof(size_t) - 1;  // padding takes at most sizeof(size_t) - 1 bytes
   size_t total_size_per_record = bucket_get_record_size(type) + sizeof(uint16_t);
   return body_size / total_size_per_record;
+}
+
+/*
+ * Get index from data pointer.
+ */
+static size_t bucket_get_index(struct bucket_header *header, void *ptr) {
+  size_t record_num = bucket_get_max_records(header->type);
+  void *data = bucket_get_data(header, record_num);
+  return ((size_t)ptr - (size_t)(data)) / bucket_get_record_size(header->type);
 }
 
 /*
@@ -175,13 +199,9 @@ static void record_free(struct bucket_header *header, size_t index) {
   }
 }
 
-/*
- * Get index from data pointer
- */
-static size_t bucket_get_index(struct bucket_header *header, void *ptr) {
-  size_t record_num = bucket_get_max_records(header->type);
-  void *data = bucket_get_data(header, record_num);
-  return ((size_t)ptr - (size_t)(data)) / bucket_get_record_size(header->type);
+static bool record_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
+  size_t record_size = bucket_get_record_size(header->type);
+  return new_size <= record_size;
 }
 
 /*****************************************
@@ -201,9 +221,17 @@ void *malloc(size_t size) {
   return ptr;
 }
 
+void *calloc(size_t nmemb, size_t size) {
+  dprint("DEBUG: calloc(%zu, %zu)\n", nmemb, size);
+  void *ptr = malloc(nmemb * size);
+  if (!ptr) return NULL;
+  memset(ptr, 0, nmemb * size);
+  return ptr;
+}
+
 void free(void *ptr) {
   if (!ptr) return;
-  struct bucket_header *header = (struct bucket_header *)((size_t)ptr & PAGE_BEGIN_MASK);
+  struct bucket_header *header = util_ptr_to_header(ptr);
   if (header->type == BUCKET_TYPE_BLOB) {
     blob_free(header);
   } else {
@@ -213,19 +241,20 @@ void free(void *ptr) {
   }
 }
 
-void *calloc(size_t nmemb, size_t size) {
-  dprint("DEBUG: calloc(%zu, %zu)\n", nmemb, size);
-  void *ptr = malloc(nmemb * size);
-  if (!ptr) return NULL;
-  memset(ptr, 0, nmemb * size);
-  return ptr;
-}
-
 void *realloc(void *ptr, size_t size) {
-  dprint("DEBUG: realloc(%p, %zu)\n", ptr, size);
+  if (!ptr) return malloc(size);
+
+  struct bucket_header *header = util_ptr_to_header(ptr);
+  if (header->type == BUCKET_TYPE_BLOB) {
+    if (blob_can_realloc_inplace(header, size)) return ptr;
+  } else {
+    if (record_can_realloc_inplace(header, size)) return ptr;
+  }
+
   void *new_address = malloc(size);
   if (ptr) memcpy(new_address, ptr, size);
   free(ptr);
+  dprint("DEBUG: realloc(%p, %zu) = %p\n", ptr, size);
   return new_address;
 }
 
