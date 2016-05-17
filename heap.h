@@ -2,6 +2,7 @@
 #define _HEAP_H_
 #include <stdint.h>
 #include <stddef.h>
+#include "bitmap.h"
 #include "list.h"
 
 #define ALIGN_SIZE        sizeof(size_t)
@@ -18,7 +19,6 @@ struct bucket_header {
   union {
     struct {
       struct list_head list;
-      uint8_t records_used;
     } bucket;
 
     struct {
@@ -27,7 +27,7 @@ struct bucket_header {
   };
 
   uint8_t type;
-  uint16_t bytes_used[0];
+  struct bitmap record_avail;
 };
 
 /*
@@ -41,5 +41,17 @@ struct bucket_header {
  * N denotes the maximium number of records can store in a bucket.
  * Consult bucket_max_record() for more details.
  */
+
+#if DEBUG > 0
+# define iprint(...) fprintf(stderr, __VA_ARGS__)
+#else
+# define iprint(...)
+#endif
+
+#if DEBUG > 1
+# define dprint(...) fprintf(stderr, __VA_ARGS__)
+#else
+# define dprint(...)
+#endif
 
 #endif

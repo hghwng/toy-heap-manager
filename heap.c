@@ -7,14 +7,6 @@
 #include "list.h"
 #include "heap.h"
 
-#ifdef DEBUG
-# define dprint(...) fprintf(stderr, __VA_ARGS__)
-# define iprint(...) fprintf(stderr, __VA_ARGS__)
-#else
-# define dprint(...)
-# define iprint(...)
-#endif
-
 static struct list_head g_free[BUCKET_TYPE_NUM];
 static struct list_head g_full[BUCKET_TYPE_NUM];
 static int g_fd;
@@ -76,7 +68,7 @@ static void *blob_alloc(size_t size) {
   header->type = BUCKET_TYPE_BLOB;
   header->blob.pages_allocated = pages;
 
-  return (void *)util_align((size_t)&header->bytes_used, ALIGN_SIZE);
+  return (void *)util_align((size_t)&header->record_avail, ALIGN_SIZE);
 }
 
 static void blob_free(struct bucket_header *header) {
@@ -85,7 +77,7 @@ static void blob_free(struct bucket_header *header) {
 
 static bool blob_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
   size_t end = (size_t)header + header->blob.pages_allocated * PAGE_SIZE;
-  size_t avail = end - util_align((size_t)header->bytes_used, ALIGN_SIZE);
+  size_t avail = end - util_align((size_t)&header->record_avail, ALIGN_SIZE);
   return new_size <= avail;
 }
 /******************************************
@@ -101,7 +93,7 @@ static inline size_t bucket_get_record_size(size_t type) {
 }
 
 static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_records) {
-  void *data = hdr->bytes_used + num_records;
+  size_t data = (size_t)&hdr->record_avail + bitmap_get_size(num_records);
   return (char *)util_align((size_t)data, ALIGN_SIZE);
 }
 
@@ -111,8 +103,8 @@ static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_record
 static inline size_t bucket_get_max_records(size_t type) {
   size_t body_size = PAGE_SIZE - sizeof(struct bucket_header);
   body_size -= sizeof(size_t) - 1;  // padding takes at most sizeof(size_t) - 1 bytes
-  size_t total_size_per_record = bucket_get_record_size(type) + sizeof(uint16_t);
-  return body_size / total_size_per_record;
+  float total_size_per_record = bucket_get_record_size(type) + 1.0 / 8;
+  return (size_t)(body_size / total_size_per_record);
 }
 
 /*
@@ -134,7 +126,7 @@ static void *bucket_alloc(size_t type) {
 
   struct bucket_header *header = (struct bucket_header *)ptr;
   header->type = type;
-  header->bucket.records_used = 0;
+  bitmap_init(&header->record_avail, bitmap_get_size(bucket_get_max_records(type)), 1);
   list_add(g_free + type, &header->bucket.list);
 
   return ptr;
@@ -168,18 +160,17 @@ static void *record_alloc(size_t size) {
   size_t record_size = bucket_get_record_size(type);
   size_t record_num = bucket_get_max_records(type);
   struct bucket_header *header = list_first(g_free[type], struct bucket_header, bucket.list);
-  char *data = bucket_get_data(header, record_num);
 
-  size_t i = 0;
-  while (header->bytes_used[i]) ++i, data += record_size;
+  size_t i = bitmap_find_one(&header->record_avail, record_num);
+  if (i == -1ul) raise(SIGABRT);
+  bitmap_clear(&header->record_avail, i);
+  char *data = bucket_get_data(header, record_num) + record_size * i;
   dprint("DEBUG: record_alloc, header=%p i=%zu data=%p size=%zu\n", header, i, data, size);
 
-  // Write metadata back
-  header->bytes_used[i] = size;
-  ++header->bucket.records_used;
-
   // Move to full if needed
-  if (header->bucket.records_used == record_num) list_move(g_full + type, &header->bucket.list);
+  if (bitmap_count(&header->record_avail, record_num) == record_num - 1) {
+    list_move(g_full + type, &header->bucket.list);
+  }
   return data;
 }
 
@@ -188,13 +179,14 @@ static void *record_alloc(size_t size) {
  */
 static void record_free(struct bucket_header *header, size_t index) {
   size_t record_num = bucket_get_max_records(header->type);
-  --header->bucket.records_used;
-  header->bytes_used[index] = 0;
+  bitmap_set(&header->record_avail, index);
 
-  if (header->bucket.records_used == record_num - 1) {
-    list_move(g_free + header->type, &header->bucket.list);
-  } else if (header->bucket.records_used == 0) {
+  size_t count = bitmap_count(&header->record_avail, record_num);
+  if (count == 0) {
     bucket_free(header);
+  } else {
+    dprint("DEBUG: record_free header=%p, index=%zu, usage=%zu/%zu\n", header, index, count, record_num);
+    list_move(g_free + header->type, &header->bucket.list);
   }
 }
 
@@ -235,7 +227,6 @@ void free(void *ptr) {
     blob_free(header);
   } else {
     size_t index = bucket_get_index(header, ptr);
-    dprint("DEBUG: record_free, header = %p, type = %u, i = %zu, data = %p\n", header, header->type, index, ptr);
     record_free(header, index);
   }
 }
@@ -253,7 +244,7 @@ void *realloc(void *ptr, size_t size) {
   void *new_address = malloc(size);
   if (ptr) memcpy(new_address, ptr, size);
   free(ptr);
-  dprint("DEBUG: realloc(%p, %zu) = %p\n", ptr, size);
+  dprint("DEBUG: realloc(%p, %zu) = %p\n", ptr, size, new_address);
   return new_address;
 }
 

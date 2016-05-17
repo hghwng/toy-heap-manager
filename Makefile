@@ -15,7 +15,7 @@ clean:
 bin/libheap.so: bin/heap.o
 	$(CC) -shared -g $< -o $@
 
-bin/heap.o: heap.c heap.h list.h
+bin/heap.o: heap.c heap.h list.h bitmap.h
 	$(CC) $(CFLAGS) $< -o $@
 
 .PHONY: lib run gdb clean
