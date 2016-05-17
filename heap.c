@@ -1,13 +1,19 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <fcntl.h>
-
 #include <memory.h>
+#include <assert.h>
 #include <stdio.h>
 #include "list.h"
 #include "heap.h"
-#define dprint(...) fprintf(stderr, __VA_ARGS__)
-#define iprint(...) fprintf(stderr, __VA_ARGS__)
+
+#ifdef DEBUG
+# define dprint(...) fprintf(stderr, __VA_ARGS__)
+# define iprint(...) fprintf(stderr, __VA_ARGS__)
+#else
+# define dprint(...)
+# define iprint(...)
+#endif
 
 static struct list_head g_free[BUCKET_TYPE_NUM];
 static struct list_head g_full[BUCKET_TYPE_NUM];
@@ -38,10 +44,10 @@ static void *blob_alloc(size_t size) {
 
   struct bucket_header *header = (struct bucket_header *)ptr;
   header->type = BUCKET_TYPE_BLOB;
-  header->blob.bytes_in_use = size;
+  header->blob.bytes_used = size;
   header->blob.pages_allocated = pages;
 
-  return (char *)ptr + sizeof(struct bucket_header);
+  return header->bytes_used;
 }
 
 static void blob_free(struct bucket_header *header) {
@@ -54,26 +60,27 @@ static void blob_free(struct bucket_header *header) {
 
 /*
  * Get the max record size the given type of bucket can store.
- * i.e. data_size <= bucket_get_size(type)
+ * i.e. data_size <= bucket_get_record_size(type)
  */
-static inline size_t bucket_get_size(size_t type) {
+static inline size_t bucket_get_record_size(size_t type) {
   return 1ul << type;
+}
+
+static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_records) {
+  size_t data = (size_t)(hdr->bytes_used + num_records);
+  // padding to multiple of word size (sizeof(size_t)).
+  data += (sizeof(size_t) - data % sizeof(size_t)) % sizeof(size_t);
+  return (char *)data;
 }
 
 /*
  * Calculate max number of records can store in a bucket.
  */
-static inline size_t bucket_max_record(size_t type) {
+static inline size_t bucket_get_max_records(size_t type) {
   size_t body_size = PAGE_SIZE - sizeof(struct bucket_header);
-  size_t total_size_per_record = bucket_get_size(type) + sizeof(struct bucket_record);
+  body_size -= sizeof(size_t) - 1;  // padding takes at most sizeof(size_t) - 1 bytes
+  size_t total_size_per_record = bucket_get_record_size(type) + sizeof(uint16_t);
   return body_size / total_size_per_record;
-}
-
-/*
- * Get the base of the records from the base of the header.
- */
-static inline struct bucket_record *bucket_get_records(struct bucket_header *bucket) {
-  return (struct bucket_record *)((char *)bucket + sizeof(struct bucket_header));
 }
 
 /*
@@ -86,7 +93,7 @@ static void *bucket_alloc(size_t type) {
 
   struct bucket_header *header = (struct bucket_header *)ptr;
   header->type = type;
-  header->bucket.records_in_use = 0;
+  header->bucket.records_used = 0;
   list_add(g_free + type, &header->bucket.list);
 
   return ptr;
@@ -105,9 +112,10 @@ static void bucket_free(struct bucket_header *bucket) {
  */
 static void *record_alloc(size_t size) {
   size_t type;
-  if (size < bucket_get_size(BUCKET_TYPE_MIN)) {
+  if (size < bucket_get_record_size(BUCKET_TYPE_MIN)) {
     type = BUCKET_TYPE_MIN;
   } else {
+    // E.g. 0b101 .. 0b1000 -> type 3
     type = 8 * sizeof(unsigned int) - __builtin_clz((unsigned int)(size - 1));
   }
 
@@ -116,21 +124,21 @@ static void *record_alloc(size_t size) {
   if (list_empty(head) && !bucket_alloc(type)) return NULL;
 
   // Find an available (record, data) tuple
-  size_t record_size = bucket_get_size(type);
-  size_t record_num = bucket_max_record(type);
+  size_t record_size = bucket_get_record_size(type);
+  size_t record_num = bucket_get_max_records(type);
   struct bucket_header *header = list_first(g_free[type], struct bucket_header, bucket.list);
-  struct bucket_record *record = bucket_get_records(header);
-  char *data = (char *)(record + record_num);
+  char *data = bucket_get_data(header, record_num);
+
   size_t i = 0;
-  while (record->bytes_in_use) ++record, data += record_size, ++i;
-  iprint("INFO: record_alloc, header=%p i=%zu data=%p size=%zu\n", header, i, data, size);
+  while (header->bytes_used[i]) ++i, data += record_size;
+  dprint("DEBUG: record_alloc, header=%p i=%zu data=%p size=%zu\n", header, i, data, size);
 
   // Write metadata back
-  record->bytes_in_use = size;
-  ++header->bucket.records_in_use;
+  header->bytes_used[i] = size;
+  ++header->bucket.records_used;
 
   // Move to full if needed
-  if (header->bucket.records_in_use == record_num) list_move(g_full + type, &header->bucket.list);
+  if (header->bucket.records_used == record_num) list_move(g_full + type, &header->bucket.list);
   return data;
 }
 
@@ -138,16 +146,24 @@ static void *record_alloc(size_t size) {
  * Free the record given by index.
  */
 static void record_free(struct bucket_header *header, size_t index) {
-  size_t record_num = bucket_max_record(header->type);
-  struct bucket_record *record = bucket_get_records(header);
-  --header->bucket.records_in_use;
-  record[index].bytes_in_use = 0;
+  size_t record_num = bucket_get_max_records(header->type);
+  --header->bucket.records_used;
+  header->bytes_used[index] = 0;
 
-  if (header->bucket.records_in_use == record_num - 1) {
+  if (header->bucket.records_used == record_num - 1) {
     list_move(g_free + header->type, &header->bucket.list);
-  } else if (header->bucket.records_in_use == 0) {
+  } else if (header->bucket.records_used == 0) {
     bucket_free(header);
   }
+}
+
+/*
+ * Get index from data pointer
+ */
+static size_t bucket_get_index(struct bucket_header *header, void *ptr) {
+  size_t record_num = bucket_get_max_records(header->type);
+  void *data = bucket_get_data(header, record_num);
+  return ((size_t)ptr - (size_t)(data)) / bucket_get_record_size(header->type);
 }
 
 /*****************************************
@@ -157,7 +173,7 @@ static void record_free(struct bucket_header *header, size_t index) {
 void *malloc(size_t size) {
   void *ptr = NULL;
   if (size != 0) {
-    if (size <= bucket_get_size(BUCKET_TYPE_MAX) && size > 512) {
+    if (size <= bucket_get_record_size(BUCKET_TYPE_MAX)) {
       ptr = record_alloc(size);
     } else {
       ptr = blob_alloc(size);
@@ -168,24 +184,23 @@ void *malloc(size_t size) {
 }
 
 void free(void *ptr) {
-  dprint("DEBUG: free(%p)\n", ptr);
-
   if (!ptr) return;
   struct bucket_header *header = (struct bucket_header *)((size_t)ptr & PAGE_BEGIN_MASK);
   if (header->type == BUCKET_TYPE_BLOB) {
     blob_free(header);
   } else {
-    size_t offset = (size_t)ptr - (size_t)(
-        bucket_get_records(header) + bucket_max_record(header->type));
-    size_t idx = offset / bucket_get_size(header->type);
-    iprint("INFO: record_free, header = %p, i = %zu, data = %p\n", header, idx, ptr);
-    record_free(header, idx);
+    size_t index = bucket_get_index(header, ptr);
+    dprint("DEBUG: record_free, header = %p, type = %u, i = %zu, data = %p\n", header, header->type, index, ptr);
+    record_free(header, index);
   }
 }
 
 void *calloc(size_t nmemb, size_t size) {
   dprint("DEBUG: calloc(%zu, %zu)\n", nmemb, size);
-  return malloc(nmemb * size);
+  void *ptr = malloc(nmemb * size);
+  if (!ptr) return NULL;
+  memset(ptr, 0, nmemb * size);
+  return ptr;
 }
 
 void *realloc(void *ptr, size_t size) {
@@ -208,4 +223,3 @@ __attribute__((constructor)) static void init() {
     list_init(g_full + i);
   }
 }
-
