@@ -1,4 +1,5 @@
-CFLAGS=-c -g -Wall -Wextra -fPIC
+DEBUG ?= 0
+CFLAGS=-c -g -Wall -Wextra -fPIC -DDEBUG=$(DEBUG)
 APP=/bin/ls
 
 lib: bin/libheap.so
