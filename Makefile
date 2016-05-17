@@ -7,7 +7,7 @@ run: bin/libheap.so
 	LD_PRELOAD=$< $(APP)
 
 gdb: bin/libheap.so
-	gdb -ex "set exec-wrapper env LD_PRELOAD=$<" $(APP)
+	gdb -ex "set exec-wrapper env LD_PRELOAD=$<" --args $(APP)
 
 clean:
 	rm ./bin/*
