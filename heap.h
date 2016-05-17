@@ -23,7 +23,6 @@ struct bucket_header {
 
     struct {
       size_t pages_allocated;
-      size_t bytes_used;
     } blob;
   };
 

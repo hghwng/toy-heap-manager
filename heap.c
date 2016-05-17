@@ -74,7 +74,6 @@ static void *blob_alloc(size_t size) {
 
   struct bucket_header *header = (struct bucket_header *)ptr;
   header->type = BUCKET_TYPE_BLOB;
-  header->blob.bytes_used = size;
   header->blob.pages_allocated = pages;
 
   return (void *)util_align((size_t)&header->bytes_used, ALIGN_SIZE);
