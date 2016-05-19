@@ -67,10 +67,10 @@ static void blob_free(struct bucket_header *header) {
   virtual_free(header, header->blob.pages_allocated);
 }
 
-static bool blob_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
+static size_t blob_get_size(struct bucket_header *header) {
   size_t end = (size_t)header + header->blob.pages_allocated * PAGE_SIZE;
-  size_t avail = end - (size_t)&header->record_avail;
-  return new_size <= avail;
+  size_t size = end - (size_t)&header->record_avail;
+  return size;
 }
 
 /******************************************
@@ -183,11 +183,6 @@ static void record_free(struct bucket_header *header, size_t index) {
   }
 }
 
-static bool record_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
-  size_t record_size = bucket_get_record_size(header->type);
-  return new_size <= record_size;
-}
-
 /*****************************************
  *  Exported functions to override libc  *
  *****************************************/
@@ -232,16 +227,18 @@ void *realloc(void *ptr, size_t size) {
   if (!ptr) return malloc(size);
 
   struct bucket_header *header = util_ptr_to_header(ptr);
+  size_t max_avail;
   if (header->type == BUCKET_TYPE_BLOB) {
-    if (blob_can_realloc_inplace(header, size)) return ptr;
+    max_avail = blob_get_size(header);
   } else {
-    if (record_can_realloc_inplace(header, size)) return ptr;
+    max_avail = bucket_get_record_size(header->type);
   }
+  if (max_avail >= size) return ptr;
 
   void *new_address = malloc(size);
-  if (ptr) memcpy(new_address, ptr, size);
+  if (ptr) memcpy(new_address, ptr, max_avail);
   free(ptr);
+
   dprint("DEBUG: realloc(%p, %zu) = %p\n", ptr, size, new_address);
   return new_address;
 }
-
