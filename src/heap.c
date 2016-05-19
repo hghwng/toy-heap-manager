@@ -201,7 +201,7 @@ void *malloc(size_t size) {
       ptr = blob_alloc(size);
     }
   }
-  dprint("malloc(%zu) = %p\n", size, ptr);
+  dprint("DEBUG: malloc(%zu) = %p\n", size, ptr);
   return ptr;
 }
 
@@ -225,6 +225,10 @@ void free(void *ptr) {
 }
 
 void *realloc(void *ptr, size_t size) {
+  if (size == 0) {
+    free(ptr);
+    return NULL;
+  }
   if (!ptr) return malloc(size);
 
   struct bucket_header *header = util_ptr_to_header(ptr);
