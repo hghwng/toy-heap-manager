@@ -12,16 +12,6 @@ static struct list_head g_full[BUCKET_TYPE_NUM];
 static int g_fd;
 
 /*
- * Pad size such that (size % align == 0).
- */
-static inline size_t util_align(size_t size, size_t align) {
-  // size % align: remaining bytes
-  // align - size % align: bytes to pad
-  // (align - size % align) % align: handle cases where (size % align == 0) already
-  return size + (align - size % align) % align;
-}
-
-/*
  * Get the bucket header associated with the pointer to user data.
  */
 static inline struct bucket_header *util_ptr_to_header(void *ptr) {
@@ -60,7 +50,7 @@ static void virtual_free(void *ptr, size_t pages) {
  ******************************************/
 
 static void *blob_alloc(size_t size) {
-  size_t pages = (size + sizeof(struct bucket_header) + ALIGN_SIZE - 1) / PAGE_SIZE + 1;
+  size_t pages = (size + sizeof(struct bucket_header)) / PAGE_SIZE + 1;
   void *ptr = virtual_alloc(pages);
   if (!ptr) return NULL;
 
@@ -68,7 +58,7 @@ static void *blob_alloc(size_t size) {
   header->type = BUCKET_TYPE_BLOB;
   header->blob.pages_allocated = pages;
 
-  return (void *)util_align((size_t)&header->record_avail, ALIGN_SIZE);
+  return &header->record_avail;
 }
 
 static void blob_free(struct bucket_header *header) {
@@ -77,9 +67,10 @@ static void blob_free(struct bucket_header *header) {
 
 static bool blob_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
   size_t end = (size_t)header + header->blob.pages_allocated * PAGE_SIZE;
-  size_t avail = end - util_align((size_t)&header->record_avail, ALIGN_SIZE);
+  size_t avail = end - (size_t)&header->record_avail;
   return new_size <= avail;
 }
+
 /******************************************
  *  Managed allocation for small objects  *
  ******************************************/
@@ -93,8 +84,7 @@ static inline size_t bucket_get_record_size(size_t type) {
 }
 
 static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_records) {
-  size_t data = (size_t)&hdr->record_avail + bitmap_get_size(num_records);
-  return (char *)util_align((size_t)data, ALIGN_SIZE);
+  return (char *)&hdr->record_avail + bitmap_get_size(num_records);
 }
 
 /*
@@ -103,6 +93,7 @@ static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_record
 static inline size_t bucket_get_max_records(size_t type) {
   size_t body_size = PAGE_SIZE - sizeof(struct bucket_header);
   body_size -= sizeof(size_t) - 1;  // padding takes at most sizeof(size_t) - 1 bytes
+  body_size -= 64;                  // spaces for the reminder bits of bitmap
   float total_size_per_record = bucket_get_record_size(type) + 1.0 / 8;
   return (size_t)(body_size / total_size_per_record);
 }
