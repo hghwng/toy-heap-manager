@@ -36,8 +36,10 @@ __attribute__((constructor)) static void init() {
  ***************************/
 
 static void *virtual_alloc(size_t pages) {
-  return mmap(NULL, pages * PAGE_SIZE, PROT_READ | PROT_WRITE,
-              MAP_PRIVATE, g_fd, 0);
+  void *ptr = mmap(NULL, pages * PAGE_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE, g_fd, 0);
+  if ((size_t)ptr != -1ul) return ptr;
+  return NULL;
 }
 
 static void virtual_free(void *ptr, size_t pages) {
