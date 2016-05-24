@@ -9,8 +9,7 @@ struct bitmap {
 };
 
 static inline size_t bitmap_get_size(size_t num_elements) {
-  size_t bytes = num_elements / 8 + (num_elements % 8 ? 1 : 0);
-  return bytes % 8 ? (bytes / 8 + 1) * 8 : bytes;
+  return (num_elements / 64 + !!(num_elements % 64)) * 64;
 }
 
 static inline void bitmap_init(struct bitmap *map, size_t size, int init_val) {
