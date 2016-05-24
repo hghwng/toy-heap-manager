@@ -7,7 +7,7 @@ void *malloc(size_t size) {
       ptr = blob_alloc(size);
     }
   }
-  dprint("malloc(%zu) = %p\n", size, ptr);
+  dprint("DEBUG: malloc(%zu) = %p\n", size, ptr);
   return ptr;
 }
 
@@ -31,19 +31,25 @@ void free(void *ptr) {
 }
 
 void *realloc(void *ptr, size_t size) {
+  if (size == 0) {
+    free(ptr);
+    return NULL;
+  }
   if (!ptr) return malloc(size);
 
   struct bucket_header *header = util_ptr_to_header(ptr);
+  size_t max_avail;
   if (header->type == BUCKET_TYPE_BLOB) {
-    if (blob_can_realloc_inplace(header, size)) return ptr;
+    max_avail = blob_get_size(header);
   } else {
-    if (record_can_realloc_inplace(header, size)) return ptr;
+    max_avail = bucket_get_record_size(header->type);
   }
+  if (max_avail >= size) return ptr;
 
   void *new_address = malloc(size);
-  if (ptr) memcpy(new_address, ptr, size);
+  if (ptr) memcpy(new_address, ptr, max_avail);
   free(ptr);
+
   dprint("DEBUG: realloc(%p, %zu) = %p\n", ptr, size, new_address);
   return new_address;
 }
-

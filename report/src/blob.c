@@ -14,8 +14,9 @@ static void blob_free(struct bucket_header *header) {
   virtual_free(header, header->blob.pages_allocated);
 }
 
-static bool blob_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
+static size_t blob_get_size(struct bucket_header *header) {
   size_t end = (size_t)header + header->blob.pages_allocated * PAGE_SIZE;
-  size_t avail = end - util_align((size_t)&header->record_avail, ALIGN_SIZE);
-  return new_size <= avail;
+  size_t size = end - (size_t)&header->record_avail;
+  return size;
 }
+

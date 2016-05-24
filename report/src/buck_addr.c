@@ -1,6 +1,5 @@
 static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_records) {
-  size_t data = (size_t)&hdr->record_avail + bitmap_get_size(num_records);
-  return (char *)util_align((size_t)data, ALIGN_SIZE);
+  return (char *)&hdr->record_avail + bitmap_get_size(num_records);
 }
 
 /*
@@ -18,4 +17,3 @@ static size_t bucket_get_index(struct bucket_header *header, void *ptr) {
 static inline struct bucket_header *util_ptr_to_header(void *ptr) {
   return (struct bucket_header *)((size_t)ptr & PAGE_BEGIN_MASK);
 }
-

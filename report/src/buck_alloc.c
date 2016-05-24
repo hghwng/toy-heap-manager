@@ -45,8 +45,12 @@ static void record_free(struct bucket_header *header, size_t index) {
   }
 }
 
-static bool record_can_realloc_inplace(struct bucket_header *header, size_t new_size) {
-  size_t record_size = bucket_get_record_size(header->type);
-  return new_size <= record_size;
+/*
+ * Calculate max number of records can store in a bucket.
+ */
+static inline size_t bucket_get_max_records(size_t type) {
+  size_t body_bits = (PAGE_SIZE - sizeof(struct bucket_header)) * 8;
+  body_bits -= 64;                  // spaces for the reminder bits of bitmap
+  float bits_per_record = bucket_get_record_size(type) * 8 + 1;
+  return body_bits / bits_per_record;
 }
-
