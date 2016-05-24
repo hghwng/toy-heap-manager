@@ -93,11 +93,10 @@ static inline char *bucket_get_data(struct bucket_header *hdr, size_t num_record
  * Calculate max number of records can store in a bucket.
  */
 static inline size_t bucket_get_max_records(size_t type) {
-  size_t body_size = PAGE_SIZE - sizeof(struct bucket_header);
-  body_size -= sizeof(size_t) - 1;  // padding takes at most sizeof(size_t) - 1 bytes
-  body_size -= 64;                  // spaces for the reminder bits of bitmap
-  float total_size_per_record = bucket_get_record_size(type) + 1.0 / 8;
-  return (size_t)(body_size / total_size_per_record);
+  size_t body_bits = (PAGE_SIZE - sizeof(struct bucket_header)) * 8;
+  body_bits -= 64;                  // spaces for the reminder bits of bitmap
+  float bits_per_record = bucket_get_record_size(type) * 8 + 1;
+  return body_bits / bits_per_record;
 }
 
 /*
