@@ -44,6 +44,7 @@
 
 \newcommand{\LabTitlePage}[3]{\begin{titlepage}
   \begin{center}
+    \vspace*{1cm}
     \CJKfamily{Caption}     \Huge\textbf{北京邮电大学软件学院}  \\
     \CJKfamily{SubCaption}  \huge\textbf{%
       \ifnum\value{LabMonth} < 9%
@@ -120,15 +121,6 @@
 
 \subsection{数据结构}
 
-\subsubsection{包头}
-首先设计包的结构，并以 \texttt{bucket\_header} 命名。
-
-\LabSrc{bag}
-
-对于大记录（BLOB）类型的数据，需要记录当前申请了多少页，在释放或重分配时会用到。对于小记录（bucket）类型的数据，需要放置双向环形链表节点，用来维护空包链表；需要存储当前的记录，在插入新记录时会用到。使用 \texttt{type} 域记录当前包的类型，并设置魔术值区分 BLOB 和 bucket：
-
-\LabSrc{bag_def}
-
 \subsubsection{链表}
 使用链表节点和有效数据分离的思路，双向环形链表的数据结构，通过宏实现基本的链表操作。
 
@@ -139,7 +131,7 @@
 \LabSrc{list_em}
 
 \subsubsection{Bitmap}
-通过 bitmap 维护记录的存在性，每八个记录只需要一个字节，节省空间。在这里使用 64 bit 作为 bitmap 的基本单元（block）。
+通过 bitmap 维护记录的存在性，每八个记录只需要一个字节，节省空间。在这里使用 64 bit 作为 bitmap 的基本单元（block）。使用 GCC 对于长度为 0 的数组的支持。
 
 \LabSrc{bitmap}
 
@@ -148,6 +140,21 @@
 使用 gcc 提供的内置函数 \texttt{\_\_builtin\_popcount} 和 \texttt{\_\_builtin\_ctz} 可以在各个平台高效地进行比特计数和尾部 0 位置的寻找。结合基本单元的数据类型，使用 64 bit 的版本。注意到这两个方法对于开头的 0 不敏感，可以将末尾的非 64 整数倍的比特一并处理。
 
 \LabSrc{bitmap_em}
+
+\subsubsection{包头}
+有了基本数据结构的支持，下面设计包头。为了提高内存访问效率，在一些平台下避免错误，需要对齐地址为处理器字长的整数倍。在目前测试的 AMD64 平台下，以 8 字节做对齐。
+
+\LabSrc{align}
+
+首先设计包的结构，并以 \texttt{bucket\_header} 命名。通过构造合理的包头结构，可以避免对齐带来的副作用。小的结构体成员尽量靠在一起，防止对齐导致空隙，降低内存的使用效率。最后面放置变长的 bitmap，而 bitmap 以 64bit 为基本单元，已经对齐，后面真实存放的用户数据就无需对齐了。
+
+最后，由于 BLOB 和 bucket 两类数据不会在同一页中出现，使用 \texttt{union} 以重复使用相同的偏移量。
+
+\LabSrc{bag}
+
+对于大记录（BLOB）类型的数据，需要记录当前申请了多少页，在释放或重分配时会用到。对于小记录（bucket）类型的数据，需要放置双向环形链表节点，用来维护空包链表；需要存储当前的记录，在插入新记录时会用到。使用 \texttt{type} 域记录当前包的类型，并设置魔术值区分 BLOB 和 bucket：
+
+\LabSrc{bag_def}
 
 \subsection{初始化和内存申请}
 在全局变量中存储 \texttt{/dev/zero} 的文件描述符和各个类型包的链表头。在动态库被载入时，需要初始化这些数据。依据 GCC 的文档，使用 \texttt{\_\_attribute\_\_} 将 \texttt{init} 函数置入 \texttt{.init\_array} 段，由链接器在程序初始化时调用。
@@ -159,11 +166,8 @@
 \LabSrc{mem}
 
 \subsection{大包管理}
-为了提高内存访问效率，在一些平台下避免错误，需要对齐地址为处理器字长的整数倍。在目前测试的 x86\_64 平台下，以 8 做对齐。
-
-\LabSrc{align}
-
 注意到内存分配器在存储用户记录外，还要存储包头及对齐带来的空隙。以此计算需要的字节数并换算成页数。其余地方比较简单，不再赘述。
+
 
 \LabSrc{blob}
 
@@ -171,7 +175,7 @@
 \subsubsection{计算}
 由于小包根据记录大小分为不同的类别，所以不同类别的小包能存放的记录数是不同的。在分配空间时必须计算。
 
-刨去上面提到的包头大小及对齐空隙，剩下的内容用来存放记录。每个记录实质上由 $2^i$ 字节的用户数据空间和 1 比特（即 0.125 字节）的可用状态 bitmap 组成。
+刨去上面提到的包头大小及对齐空隙，剩下的内容用来存放记录。每个记录实质上由 $2^i$ 字节的用户数据空间和 1 比特的可用状态 bitmap 组成。
 
 \LabSrc{buck_calc}
 
@@ -209,6 +213,8 @@
 
 \inputminted[fontsize=\scriptsize, breaklines]{makefile}{../src/Makefile}
 
+执行测试：
+
 {\scriptsize
 \begin{verbatim}
 src git:(master) % make                                                          22:27
@@ -238,7 +244,7 @@ LD_PRELOAD=bin/libheap.so /bin/find .
 \end{verbatim}
 }
 
-进行较高强度的测试。在覆盖系统库符号的情况下，调用 \texttt{/bin/find /} 枚举全盘文件，调用 \texttt{/bin/bash} 执行脚本，调用 \texttt{gcc} 编译源文件，均未见执行异常。
+进行较高强度的测试。在覆盖系统库符号的情况下，调用 \texttt{/bin/find /} 枚举全盘文件，调用 \texttt{/bin/bash} 执行脚本，调用 \texttt{/bin/gcc} 编译源文件，均未见执行异常。
 
 \section{小结}
 调试指针，调到泪奔！调位运算，忘记吃饭！
